@@ -5,6 +5,9 @@ use std::ffi::{c_char, c_void};
 
 pub type Proxy = *mut c_void;
 
+pub const WL_SHM_FORMAT_ARGB8888: u32 = 0;
+pub const WL_SHM_FORMAT_RGB565: u32 = 0x36314752;
+
 #[repr(C)]
 pub struct Interface {
     pub name: *const c_char,
@@ -27,17 +30,6 @@ pub struct PollFd {
     pub fd: i32,
     pub events: i16,
     pub revents: i16,
-}
-
-#[repr(C)]
-#[derive(Default)]
-pub struct TextExtents {
-    pub x_bearing: f64,
-    pub y_bearing: f64,
-    pub width: f64,
-    pub height: f64,
-    pub x_advance: f64,
-    pub y_advance: f64,
 }
 
 #[link(name = "wayland-client")]
@@ -80,35 +72,6 @@ unsafe extern "C" {
     pub static xdg_wm_base_interface: Interface;
     pub static xdg_surface_interface: Interface;
     pub static xdg_toplevel_interface: Interface;
-}
-
-#[link(name = "cairo")]
-unsafe extern "C" {
-    pub fn cairo_image_surface_create_for_data(
-        data: *mut u8,
-        format: i32,
-        width: i32,
-        height: i32,
-        stride: i32,
-    ) -> Proxy;
-    pub fn cairo_surface_status(surface: Proxy) -> i32;
-    pub fn cairo_surface_destroy(surface: Proxy);
-    pub fn cairo_surface_flush(surface: Proxy);
-    pub fn cairo_create(surface: Proxy) -> Proxy;
-    pub fn cairo_status(context: Proxy) -> i32;
-    pub fn cairo_destroy(context: Proxy);
-    pub fn cairo_set_source_rgb(context: Proxy, r: f64, g: f64, b: f64);
-    pub fn cairo_paint(context: Proxy);
-    pub fn cairo_rectangle(context: Proxy, x: f64, y: f64, w: f64, h: f64);
-    pub fn cairo_fill(context: Proxy);
-    pub fn cairo_clip(context: Proxy);
-    pub fn cairo_save(context: Proxy);
-    pub fn cairo_restore(context: Proxy);
-    pub fn cairo_move_to(context: Proxy, x: f64, y: f64);
-    pub fn cairo_select_font_face(context: Proxy, family: *const c_char, slant: i32, weight: i32);
-    pub fn cairo_set_font_size(context: Proxy, size: f64);
-    pub fn cairo_show_text(context: Proxy, text: *const c_char);
-    pub fn cairo_text_extents(context: Proxy, text: *const c_char, extents: *mut TextExtents);
 }
 
 #[link(name = "xkbcommon")]

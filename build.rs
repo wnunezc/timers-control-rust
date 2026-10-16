@@ -1,6 +1,6 @@
 //! Genera únicamente los metadatos ABI de xdg-shell con herramientas del sistema.
 //! La lógica de ventana, entrada, dibujo y temporizadores sigue escrita en Rust.
-use std::{env, path::PathBuf, process::Command};
+use std::{env, io::Write, path::PathBuf, process::Command};
 
 fn checked(command: &mut Command) {
     let status = command
@@ -34,8 +34,27 @@ fn main() {
             .arg(&xml)
             .arg(&source),
     );
+    // Solo aserciones ABI, sin lógica GUI C. Ambos lados verifican los prefijos
+    // públicos que Rust lee para rasterizar glifos FreeType en Linux de 64 bits.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&source)
+        .expect("Metadatos generados")
+        .write_all(
+            br#"
+#include <stddef.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+_Static_assert(sizeof(long)==8, "ABI long64");
+_Static_assert(offsetof(FT_FaceRec,glyph)==152, "FT_Face glyph");
+_Static_assert(offsetof(FT_GlyphSlotRec,bitmap)==152, "FT_Slot bitmap");
+_Static_assert(offsetof(FT_GlyphSlotRec,bitmap_left)==192, "FT_Slot left");
+_Static_assert(sizeof(FT_Bitmap)==40, "FT_Bitmap size");
+"#,
+        )
+        .expect("Validaciones ABI FreeType");
     let flags = Command::new("pkg-config")
-        .args(["--cflags", "wayland-client"])
+        .args(["--cflags", "wayland-client", "freetype2"])
         .output()
         .expect("Se requiere pkg-config");
     assert!(

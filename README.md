@@ -113,7 +113,7 @@ han sido definidos por el usuario.
 - Fuente Consolas en Windows y monospace en Linux, de altura lógica fija de 16 unidades, sin adaptarse al tamaño de
   la ventana. Windows puede sustituirla si falta o escalarla según la configuración
   de pantalla; no se ha implementado un contrato de DPI por monitor.
-- Controles Win32 `LISTBOX`, `STATIC` y `EDIT`; Linux dibuja con Cairo sobre Wayland,
+- Controles Win32 `LISTBOX`, `STATIC` y `EDIT`; Linux dibuja con FreeType y píxeles Rust sobre Wayland,
   sin GTK ni webview. El backend gráfico compilado se selecciona por plataforma.
 - En Windows `GetMessageW` bloquea el hilo cuando no hay mensajes. Sin cuentas activas se
   cancela el timer de Windows. Minimizado, se espera al siguiente vencimiento.
@@ -126,7 +126,8 @@ han sido definidos por el usuario.
   dispositivo y volumen configurados por el usuario; no hay fallback intencional.
 - Linux reproduce `/usr/share/sounds/freedesktop/stereo/complete.oga` del tema
   del sistema mediante libsndfile y PulseAudio/PipeWire-Pulse,
-  también síncrono. El proceso vuelve a un hilo después del audio en la prueba local.
+  también síncrono. La GUI espera a un ayudante temporal del mismo ejecutable; las bibliotecas
+  de audio se cargan allí solo mientras suena, con un hilo GUI antes/después.
 - Si se detectan varios vencimientos en una misma actualización, la implementación
   actual emite un sonido y lista sus nombres. La política definitiva de concurrencia
   de alarmas sigue pendiente de definición.
@@ -137,8 +138,11 @@ En Linux, liberar buffers de tamaños anteriores recuperó unos 29,1 MiB de RSS
 en la prueba documentada en [docs/LINUX.md](docs/LINUX.md). Son muestras locales;
 no se han establecido cifras de consumo representativas entre equipos.
 La revisión conserva estructuras simples y evita asignar un vector de tokens por
-comando. La lista se reconstruye solo cuando cambia su texto; en cada actualización
-visible aún se construyen cadenas de las filas, con coste lineal en el número de cuentas.
+comando. Windows todavía construye sus cadenas de filas en cada actualización visible.
+Linux conserva las cadenas y solo las reescribe al cambiar segundos o estados.
+
+Consultar la [revisión del consumo Linux](docs/MEMORY-REVIEW.md) para los costes
+de bibliotecas, buffers y asignaciones corregidos y sus mediciones antes/después.
 
 ## Arquitectura y revisión
 
@@ -157,18 +161,18 @@ Medición del 2026-10-16 después de la revisión, sin abrir la aplicación:
 | Módulo | Líneas físicas |
 | --- | ---: |
 | `src/windows.rs` y `src/windows/native.rs` | 600 |
-| `src/app.rs`, `timers.rs`, `duration.rs`, `command.rs`: núcleo compartido | 557 |
-| `src/linux.rs` y `src/linux/`: Wayland, ABI, dibujo, entrada y audio | 1704 |
-| `src/main.rs`: entrada | 28 |
-| `build.rs`: metadatos del protocolo en compilación | 61 |
-| **Total Rust** | **2950** |
+| `src/app.rs`, `timers.rs`, `duration.rs`, `command.rs`: núcleo compartido | 619 |
+| `src/linux.rs` y `src/linux/`: Wayland, ABI, dibujo, entrada y audio | 2307 |
+| `src/main.rs`: entrada | 43 |
+| `build.rs`: metadatos del protocolo en compilación | 80 |
+| **Total Rust** | **3649** |
 
-De ese total, 238 líneas pertenecen a módulos de pruebas, con sus comentarios y
-espacios: no se incluyen en el ejecutable normal. El total contiene 185 líneas
-completas de comentarios/documentación y 149 vacías; estas categorías se superponen
-con las pruebas y no deben restarse dos veces. Las otras 2616 son líneas de sintaxis
+De ese total, 393 líneas pertenecen a módulos de pruebas, con sus comentarios y
+espacios: no se incluyen en el ejecutable normal. El total contiene 224 líneas
+completas de comentarios/documentación y 152 vacías; estas categorías se superponen
+con las pruebas y no deben restarse dos veces. Las otras 3273 son líneas de sintaxis
 Rust, incluidas llaves, atributos y declaraciones; no equivalen a instrucciones de CPU.
-Los archivos Rust ocupan en conjunto 100 103 bytes, aproximadamente 97,8 KiB.
+Los archivos Rust ocupan en conjunto 126 303 bytes  aproximadamente 123,3 KiB.
 
 GUI y declaraciones Win32 suman 600 líneas; el nuevo backend Linux añade listeners,
 gestión explícita de teclado y buffers que Win32 ofrece como controles preparados.
@@ -183,13 +187,14 @@ implicar por sí mismos mayor consumo de la aplicación.
 | Versión refactorizada debug, `target/review/debug/timer-rust.exe` | 249 856 bytes = 244 KiB |
 | Referencia release anterior a la revisión | 130 560 bytes = 127,5 KiB |
 | Release 0.1.0 Alpha con runtime C estático | 227 840 bytes = 222,5 KiB |
-| Backend Linux optimizado local, con bibliotecas compartidas | 345 184 bytes = 337,1 KiB |
+| Backend Linux anterior a la corrección de RAM | 345 184 bytes = 337,1 KiB |
+| Backend Linux corregido, bibliotecas compartidas | 402 528 bytes = 393,1 KiB |
 | Windows debug recompilado tras añadir selección de plataforma | 349 184 bytes = 341 KiB |
-| Release 0.1.1 Alpha Windows x64 | 227 840 bytes = 222,5 KiB |
-| Paquete 0.1.1 Alpha Linux x86_64 tar.gz, con guía y avisos | 169 965 bytes = 166 KiB |
+| Release 0.1.1 Alpha Windows x64 | 228 352 bytes = 223 KiB |
+| Paquete 0.1.1 Alpha Linux x86_64 tar.gz, con guía y avisos | 200 830 bytes = 196,1 KiB |
 
 Los tamaños son mediciones de builds distintos, no un presupuesto de RAM. El
-release Alpha Windows ocupa aproximadamente 228 KB y el Linux local unos 345 KB;
+release Alpha Windows ocupa aproximadamente 228 KB y el Linux corregido unos 403 KB;
 la diferencia con el release histórico se debe también a incluir el runtime C.
 El tamaño puede cambiar con el compilador y las opciones de enlace. Las carpetas de
 build, PDB, herramientas y documentación generada no forman parte del peso del exe.
@@ -200,9 +205,12 @@ registró 20 893 696 bytes de working set (19,9 MiB) y 2 985 984 bytes privados
 y bibliotecas nativas, no solo su código Rust. Esta muestra no permite asegurar el
 consumo esperado en reposo, con audio o con más cuentas; falta un benchmark reproducible.
 Tampoco permite deducir el consumo a partir de la cantidad de líneas o del tamaño del exe.
-En Linux se observó RSS de 12 644 KiB con ventana 660×420 y un hilo. Al reducir una
-ventana 2560×1600 a ese tamaño se retiraron buffers grandes y RSS bajó unos 29,1 MiB.
-El detalle y alcance de estas mediciones puntuales están en docs/LINUX.md.
+En Linux, con una cuenta pausada y las mismas dimensiones, la corrección redujo
+RSS de 12 924 a 7008 KiB en 660×420 y de 18 764 a 9920 KiB en 1280×800. Tras tres alarmas
+otra ejecución conservó 7008 KiB de RSS antes/después; el audio usa un ayudante
+temporal cuyo coste también se midió. El informe [MEMORY-REVIEW.md](docs/MEMORY-REVIEW.md)
+distingue bibliotecas, buffers, PSS/RSS y memoria del ayudante. No equipara esos
+contadores con los 2,4 MB mostrados en la captura Windows.
 
 ## Compatibilidad pendiente
 

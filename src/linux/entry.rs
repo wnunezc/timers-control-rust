@@ -14,11 +14,6 @@ impl Entry {
         self.cursor = 0;
         self.selected = false;
     }
-    pub fn restore(&mut self, text: String) {
-        self.text = text;
-        self.cursor = self.text.len();
-        self.selected = false;
-    }
     pub fn left(&mut self) {
         self.cursor = if self.selected {
             0

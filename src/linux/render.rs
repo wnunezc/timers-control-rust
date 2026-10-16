@@ -1,17 +1,28 @@
-//! Dibujo Cairo sobre wl_shm. Dos buffers como máximo, reutilizados tras release.
-//! No hay GPU, hilos de render ni asignación de una imagen nueva por cada tick.
-
-use super::{entry::Entry, native::*};
+//! Rasterización Rust sobre wl_shm: RGB565 negociado y ARGB32 de respaldo.
+//! Cada buffer conserva revisiones de lista/pie; solo se repintan regiones cambiadas.
+use super::{entry::Entry, font::Font, native::*};
 use std::{
     cell::Cell,
-    ffi::{CString, c_void},
+    ffi::c_void,
     fs::File,
     os::fd::{AsRawFd, FromRawFd},
     ptr::{null, null_mut},
 };
 
-/// Todos los campos son recursos del mismo hilo GUI. El Box fija la dirección del
-/// dato entregado al listener release mientras el vector de buffers cambia.
+pub struct View<'a> {
+    pub rows: &'a [String],
+    pub status: &'a str,
+    pub entry: &'a Entry,
+    pub scroll: usize,
+    pub rows_version: u64,
+    pub footer_version: u64,
+}
+pub struct Damage {
+    pub list: bool,
+    pub footer: bool,
+}
+/// Solo el hilo GUI escribe el mapping, tras wl_buffer.release. Box mantiene
+/// estable el dato del listener; cada buffer recuerda su contenido por revisiones.
 pub struct Buffer {
     pub proxy: Proxy,
     pub width: i32,
@@ -19,16 +30,17 @@ pub struct Buffer {
     pub busy: Cell<bool>,
     data: *mut c_void,
     bytes: usize,
-    image: Proxy,
+    stride: usize,
+    rgb565: bool,
+    list: Option<(u64, usize)>,
+    footer: Option<u64>,
 }
-
-unsafe extern "C" fn released(data: *mut c_void, _buffer: Proxy) {
-    // SAFETY: el listener solo vive dentro del Box y se elimina antes de liberarlo.
+unsafe extern "C" fn released(data: *mut c_void, _: Proxy) {
+    // SAFETY: listener eliminado antes de liberar el Box que posee este dato.
     unsafe {
         (&*(data as *const Buffer)).busy.set(false);
     }
 }
-
 #[repr(C)]
 struct BufferListener {
     release: unsafe extern "C" fn(*mut c_void, Proxy),
@@ -36,11 +48,20 @@ struct BufferListener {
 static BUFFER_LISTENER: BufferListener = BufferListener { release: released };
 
 impl Buffer {
-    pub fn new(shm: Proxy, width: i32, height: i32) -> Result<Box<Self>, String> {
+    pub fn new(shm: Proxy, width: i32, height: i32, rgb565: bool) -> Result<Box<Self>, String> {
+        let shm_format = if rgb565 {
+            WL_SHM_FORMAT_RGB565
+        } else {
+            WL_SHM_FORMAT_ARGB8888
+        };
         let stride = width
-            .checked_mul(4)
-            .filter(|_| width > 0)
-            .ok_or("Ancho inválido")?;
+            .checked_mul(if rgb565 { 2 } else { 4 })
+            .and_then(|n| n.checked_add(3))
+            .map(|n| n & !3)
+            .ok_or("Ancho fuera de rango")?;
+        if width <= 0 || stride <= 0 {
+            return Err("Ancho inválido".into());
+        }
         let bytes = (stride as usize)
             .checked_mul(height.max(0) as usize)
             .filter(|&n| n > 0 && n <= 32 * 1024 * 1024)
@@ -64,7 +85,10 @@ impl Buffer {
             busy: Cell::new(false),
             data,
             bytes,
-            image: null_mut(),
+            stride: stride as usize,
+            rgb565,
+            list: None,
+            footer: None,
         });
         // SAFETY: firmas/opcodes de wl_shm v1. El servidor recibe su propio fd;
         // el pool puede destruirse tras crear el buffer y File puede cerrarse.
@@ -93,7 +117,7 @@ impl Buffer {
                 width,
                 height,
                 stride,
-                0u32,
+                shm_format,
             );
             wl_proxy_marshal_flags(
                 pool,
@@ -113,106 +137,96 @@ impl Buffer {
             {
                 return Err("No se pudo registrar wl_buffer.release".into());
             }
-            buffer.image =
-                cairo_image_surface_create_for_data(data.cast(), 0, width, height, stride);
-            if cairo_surface_status(buffer.image) != 0 {
-                return Err("Cairo no pudo crear la imagen".into());
-            }
         }
         Ok(buffer)
     }
 
-    pub fn draw(
-        &self,
-        rows: &[String],
-        status: &str,
-        entry: &Entry,
-        scroll: usize,
-    ) -> Result<(), String> {
-        let canvas = Canvas::new(self.image)?;
-        let width = self.width as f64;
-        let height = self.height as f64;
-        canvas.color(1.0, 1.0, 1.0);
-        // SAFETY: contexto válido de la imagen propia, usado solo en este hilo.
-        unsafe {
-            cairo_paint(canvas.0);
-        }
-        canvas.clip(8.0, 6.0, width - 16.0, (height - 94.0).max(0.0));
-        for (index, row) in rows.iter().skip(scroll).enumerate() {
-            let y = 22.0 + index as f64 * 24.0;
-            if y > height - 88.0 {
-                break;
+    pub fn draw(&mut self, view: &View<'_>, font: &mut Font) -> Result<Damage, String> {
+        assert!(
+            !self.busy.get(),
+            "No escribir un buffer prestado al compositor"
+        );
+        let damage = Damage {
+            list: self.list != Some((view.rows_version, view.scroll)),
+            footer: self.footer != Some(view.footer_version),
+        };
+        let width = self.width;
+        let height = self.height;
+        // SAFETY: mapping propio y exclusivo por &mut self, tamaño validado en new.
+        let pixels = unsafe { std::slice::from_raw_parts_mut(self.data.cast(), self.bytes) };
+        let mut canvas = Canvas {
+            pixels,
+            stride: self.stride,
+            width,
+            height,
+            rgb565: self.rgb565,
+            clip: (0, 0, width, height),
+            color: [0, 0, 0],
+        };
+        if damage.list {
+            canvas.color = [255; 3];
+            canvas.rect(0, 0, width, height - 80);
+            canvas.clip = (8, 6, width - 8, height - 88);
+            canvas.color = [13; 3];
+            for (i, row) in view.rows.iter().skip(view.scroll).enumerate() {
+                let y = 22 + i as i32 * 24;
+                if y > height - 88 {
+                    break;
+                }
+                canvas.text(font, 8, y, row)?;
             }
-            canvas.color(0.05, 0.05, 0.05);
-            canvas.text(8.0, y, row)?;
+            canvas.clip = (0, 0, width, height);
+            let visible = ((height - 96).max(24) / 24) as usize;
+            if view.rows.len() > visible {
+                let track = height - 96;
+                let thumb =
+                    ((track as i64 * visible as i64 / view.rows.len() as i64) as i32).max(8);
+                let maximum = view.rows.len().saturating_sub(visible).max(1);
+                let y = 8 + ((track - thumb) as i64 * view.scroll as i64 / maximum as i64) as i32;
+                canvas.color = [153; 3];
+                canvas.rect(width - 5, y, 3, thumb);
+            }
         }
-        canvas.unclip();
-        if rows.len() > self.visible_rows() {
-            let track = (height - 96.0).max(1.0);
-            let thumb = (track * self.visible_rows() as f64 / rows.len() as f64).max(8.0);
-            let max_scroll = rows.len().saturating_sub(self.visible_rows()).max(1);
-            canvas.color(0.6, 0.6, 0.6);
-            canvas.rect(
-                width - 5.0,
-                8.0 + (track - thumb) * scroll as f64 / max_scroll as f64,
-                3.0,
-                thumb,
-            );
+        if damage.footer {
+            canvas.clip = (0, height - 80, width, height);
+            canvas.color = [255; 3];
+            canvas.rect(0, height - 80, width, 80);
+            canvas.color = [240; 3];
+            canvas.rect(8, height - 72, width - 16, 32);
+            canvas.clip = (8, height - 72, width - 8, height - 40);
+            canvas.color = [26; 3];
+            for (i, line) in view.status.lines().take(2).enumerate() {
+                canvas.text(font, 10, height - 59 + i as i32 * 16, line)?;
+            }
+            canvas.clip = (0, height - 80, width, height);
+            canvas.color = [128; 3];
+            canvas.rect(8, height - 34, width - 16, 26);
+            canvas.color = [255; 3];
+            canvas.rect(9, height - 33, width - 18, 24);
+            canvas.clip = (11, height - 32, width - 11, height - 9);
+            let caret = font.measure(&view.entry.text[..view.entry.cursor])?;
+            let offset = (caret - (width - 30)).max(0);
+            if view.entry.selected && !view.entry.text.is_empty() {
+                canvas.color = [0, 89, 179];
+                let length = font.measure(&view.entry.text)?;
+                canvas.rect(12 - offset, height - 31, length, 21);
+                canvas.color = [255; 3];
+            } else {
+                canvas.color = [13; 3];
+            }
+            canvas.text(font, 12 - offset, height - 15, &view.entry.text)?;
+            canvas.color = [13; 3];
+            canvas.rect(12 + caret - offset, height - 30, 1, 19);
         }
-        canvas.color(0.94, 0.94, 0.94);
-        canvas.rect(8.0, height - 72.0, width - 16.0, 32.0);
-        canvas.clip(8.0, height - 72.0, width - 16.0, 32.0);
-        canvas.color(0.1, 0.1, 0.1);
-        for (index, line) in status.lines().take(2).enumerate() {
-            canvas.text(10.0, height - 59.0 + index as f64 * 16.0, line)?;
-        }
-        canvas.unclip();
-        canvas.color(0.5, 0.5, 0.5);
-        canvas.rect(8.0, height - 34.0, width - 16.0, 26.0);
-        canvas.color(1.0, 1.0, 1.0);
-        canvas.rect(9.0, height - 33.0, width - 18.0, 24.0);
-        canvas.clip(11.0, height - 32.0, width - 22.0, 23.0);
-        let caret = canvas.measure(&entry.text[..entry.cursor])?;
-        let offset = (caret - (width - 30.0)).max(0.0);
-        if entry.selected && !entry.text.is_empty() {
-            canvas.color(0.0, 0.35, 0.7);
-            canvas.rect(
-                12.0 - offset,
-                height - 31.0,
-                canvas.measure(&entry.text)?,
-                21.0,
-            );
-            canvas.color(1.0, 1.0, 1.0);
-        } else {
-            canvas.color(0.05, 0.05, 0.05);
-        }
-        canvas.text(12.0 - offset, height - 15.0, &entry.text)?;
-        canvas.color(0.05, 0.05, 0.05);
-        canvas.rect(12.0 + caret - offset, height - 30.0, 1.0, 19.0);
-        canvas.unclip();
-        // SAFETY: flush entrega a wl_shm todos los píxeles terminados por Cairo.
-        unsafe {
-            cairo_surface_flush(self.image);
-        }
-        if unsafe { cairo_status(canvas.0) } != 0 {
-            return Err("Falló el dibujo Cairo".into());
-        }
-        Ok(())
-    }
-
-    pub fn visible_rows(&self) -> usize {
-        ((self.height - 96).max(24) / 24) as usize
+        self.list = Some((view.rows_version, view.scroll));
+        self.footer = Some(view.footer_version);
+        Ok(damage)
     }
 }
-
 impl Drop for Buffer {
     fn drop(&mut self) {
-        // SAFETY: se elimina la imagen antes de su memoria, y el proxy antes de
-        // liberar el dato del listener. El mapeo del compositor es independiente.
+        // SAFETY: se elimina listener antes del Box; el servidor mantiene su mapping.
         unsafe {
-            if !self.image.is_null() {
-                cairo_surface_destroy(self.image);
-            }
             if !self.proxy.is_null() {
                 wl_proxy_marshal_flags(
                     self.proxy,
@@ -226,66 +240,229 @@ impl Drop for Buffer {
         }
     }
 }
+/// Lienzo prestado sin asignaciones; recorta antes de indexar cualquier píxel.
+struct Canvas<'a> {
+    pixels: &'a mut [u8],
+    stride: usize,
+    width: i32,
+    height: i32,
+    rgb565: bool,
+    clip: (i32, i32, i32, i32),
+    color: [u8; 3],
+}
+impl Canvas<'_> {
+    fn rect(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        let x0 = x.max(self.clip.0).max(0);
+        let y0 = y.max(self.clip.1).max(0);
+        let x1 = x.saturating_add(width).min(self.clip.2).min(self.width);
+        let y1 = y.saturating_add(height).min(self.clip.3).min(self.height);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        // Relleno opaco: no lee ni mezcla el destino por cada píxel.
+        if self.rgb565 {
+            let value = ((self.color[0] as u16 >> 3) << 11)
+                | ((self.color[1] as u16 >> 2) << 5)
+                | (self.color[2] as u16 >> 3);
+            let bytes = value.to_ne_bytes();
+            for y in y0..y1 {
+                let start = y as usize * self.stride + x0 as usize * 2;
+                for pixel in self.pixels[start..start + (x1 - x0) as usize * 2]
+                    .as_chunks_mut::<2>()
+                    .0
+                {
+                    pixel.copy_from_slice(&bytes);
+                }
+            }
+        } else {
+            let value = 0xff000000u32
+                | ((self.color[0] as u32) << 16)
+                | ((self.color[1] as u32) << 8)
+                | self.color[2] as u32;
+            let bytes = value.to_ne_bytes();
+            for y in y0..y1 {
+                let start = y as usize * self.stride + x0 as usize * 4;
+                for pixel in self.pixels[start..start + (x1 - x0) as usize * 4]
+                    .as_chunks_mut::<4>()
+                    .0
+                {
+                    pixel.copy_from_slice(&bytes);
+                }
+            }
+        }
+    }
 
-/// Contexto Cairo de vida corta; la imagen y sus píxeles pertenecen a Buffer.
-struct Canvas(Proxy);
-impl Canvas {
-    fn new(image: Proxy) -> Result<Self, String> {
-        // SAFETY: imagen viva y válida de Buffer.
-        let canvas = Self(unsafe { cairo_create(image) });
-        if unsafe { cairo_status(canvas.0) } != 0 {
-            return Err("No se pudo crear el contexto Cairo".into());
+    fn pixel(&mut self, x: i32, y: i32, alpha: u8) {
+        let offset = y as usize * self.stride + x as usize * if self.rgb565 { 2 } else { 4 };
+        let old = if self.rgb565 {
+            let value = u16::from_ne_bytes([self.pixels[offset], self.pixels[offset + 1]]);
+            [
+                (((value >> 11) & 31) as u32 * 255 / 31) as u8,
+                (((value >> 5) & 63) as u32 * 255 / 63) as u8,
+                ((value & 31) as u32 * 255 / 31) as u8,
+            ]
+        } else {
+            let value = u32::from_ne_bytes(self.pixels[offset..offset + 4].try_into().unwrap());
+            [(value >> 16) as u8, (value >> 8) as u8, value as u8]
+        };
+        let mut mixed = [0u8; 3];
+        for i in 0..3 {
+            mixed[i] =
+                ((self.color[i] as u32 * alpha as u32 + old[i] as u32 * (255 - alpha as u32) + 127)
+                    / 255) as u8;
         }
-        unsafe {
-            cairo_select_font_face(canvas.0, c"monospace".as_ptr(), 0, 0);
-            cairo_set_font_size(canvas.0, 16.0);
-        }
-        Ok(canvas)
-    }
-    fn color(&self, r: f64, g: f64, b: f64) {
-        unsafe {
-            cairo_set_source_rgb(self.0, r, g, b);
-        }
-    }
-    fn rect(&self, x: f64, y: f64, w: f64, h: f64) {
-        unsafe {
-            cairo_rectangle(self.0, x, y, w, h);
-            cairo_fill(self.0);
-        }
-    }
-    fn clip(&self, x: f64, y: f64, w: f64, h: f64) {
-        unsafe {
-            cairo_save(self.0);
-            cairo_rectangle(self.0, x, y, w, h);
-            cairo_clip(self.0);
-        }
-    }
-    fn unclip(&self) {
-        unsafe {
-            cairo_restore(self.0);
+        if self.rgb565 {
+            let value = ((mixed[0] as u16 >> 3) << 11)
+                | ((mixed[1] as u16 >> 2) << 5)
+                | (mixed[2] as u16 >> 3);
+            self.pixels[offset..offset + 2].copy_from_slice(&value.to_ne_bytes());
+        } else {
+            let value = 0xff000000u32
+                | ((mixed[0] as u32) << 16)
+                | ((mixed[1] as u32) << 8)
+                | mixed[2] as u32;
+            self.pixels[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
         }
     }
-    fn text(&self, x: f64, y: f64, text: &str) -> Result<(), String> {
-        let text = CString::new(text.replace('\0', "�")).map_err(|e| e.to_string())?;
-        unsafe {
-            cairo_move_to(self.0, x, y);
-            cairo_show_text(self.0, text.as_ptr());
+    fn text(&mut self, font: &mut Font, mut x: i32, y: i32, text: &str) -> Result<(), String> {
+        for character in text.chars() {
+            let glyph = font.glyph(character)?;
+            for gy in 0..glyph.height {
+                for gx in 0..glyph.width {
+                    let px = x + glyph.left + gx as i32;
+                    let py = y - glyph.top + gy as i32;
+                    if px >= self.clip.0.max(0)
+                        && px < self.clip.2.min(self.width)
+                        && py >= self.clip.1.max(0)
+                        && py < self.clip.3.min(self.height)
+                    {
+                        let alpha = glyph.pixels[gy * glyph.width + gx];
+                        if alpha != 0 {
+                            self.pixel(px, py, alpha);
+                        }
+                    }
+                }
+            }
+            x = x.saturating_add(glyph.advance);
+            if x >= self.clip.2 {
+                break;
+            }
         }
         Ok(())
     }
-    fn measure(&self, text: &str) -> Result<f64, String> {
-        let text = CString::new(text.replace('\0', "�")).map_err(|e| e.to_string())?;
-        let mut extents = TextExtents::default();
-        unsafe {
-            cairo_text_extents(self.0, text.as_ptr(), &mut extents);
-        }
-        Ok(extents.x_advance)
-    }
 }
-impl Drop for Canvas {
-    fn drop(&mut self) {
-        unsafe {
-            cairo_destroy(self.0);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn editing_footer_preserves_list_and_unchanged_frame_writes_nothing() {
+        let mut font = Font::new().unwrap();
+        for rgb565 in [false, true] {
+            let width = 241;
+            let height = 150;
+            let stride = if rgb565 { 484 } else { 964 };
+            let bytes = stride * height as usize;
+            // SAFETY: mapping anónimo propio del test, destruido por Buffer::drop.
+            let data = unsafe { mmap(null_mut(), bytes, 3, 0x22, -1, 0) };
+            assert_ne!(data as isize, -1);
+            let mut buffer = Buffer {
+                proxy: null_mut(),
+                width,
+                height,
+                busy: Cell::new(false),
+                data,
+                bytes,
+                stride,
+                rgb565,
+                list: None,
+                footer: None,
+            };
+            let rows = vec!["00:00:10  café  [pausado]".into()];
+            let mut entry = Entry::default();
+            let initial_view = View {
+                rows: &rows,
+                status: "Prueba",
+                entry: &entry,
+                scroll: 0,
+                rows_version: 1,
+                footer_version: 1,
+            };
+            let initial = buffer.draw(&initial_view, &mut font).unwrap();
+            assert!(initial.list && initial.footer);
+            let upper =
+                unsafe { std::slice::from_raw_parts(data.cast::<u8>(), stride * 70) }.to_vec();
+            entry.insert("sonido");
+            let view = View {
+                rows: &rows,
+                status: "Prueba",
+                entry: &entry,
+                scroll: 0,
+                rows_version: 1,
+                footer_version: 2,
+            };
+            let changed = buffer.draw(&view, &mut font).unwrap();
+            assert!(!changed.list && changed.footer);
+            assert_eq!(
+                unsafe { std::slice::from_raw_parts(data.cast::<u8>(), stride * 70) },
+                upper
+            );
+            let stable = buffer.draw(&view, &mut font).unwrap();
+            assert!(!stable.list && !stable.footer);
+        }
+    }
+    #[test]
+    fn alpha_blending_is_consistent_between_formats() {
+        for rgb565 in [false, true] {
+            let mut pixels = [255u8; 4];
+            let mut canvas = Canvas {
+                pixels: &mut pixels,
+                stride: 4,
+                width: 1,
+                height: 1,
+                rgb565,
+                clip: (0, 0, 1, 1),
+                color: [0; 3],
+            };
+            canvas.pixel(0, 0, 128);
+            if rgb565 {
+                let p = u16::from_ne_bytes(pixels[..2].try_into().unwrap());
+                assert_eq!(p, (15 << 11) | (31 << 5) | 15);
+            } else {
+                assert_eq!(u32::from_ne_bytes(pixels), 0xff7f7f7f);
+            }
+        }
+    }
+    #[test]
+    fn clipped_fill_preserves_padding_in_both_formats() {
+        for rgb565 in [false, true] {
+            let bpp = if rgb565 { 2 } else { 4 };
+            let stride = if rgb565 { 8 } else { 12 };
+            let mut pixels = vec![0xaa; stride * 2];
+            let mut canvas = Canvas {
+                pixels: &mut pixels,
+                stride,
+                width: 3,
+                height: 2,
+                rgb565,
+                clip: (0, 0, 3, 2),
+                color: [255; 3],
+            };
+            canvas.rect(-5, -5, i32::MAX, i32::MAX);
+            for y in 0..2 {
+                for p in 0..3 {
+                    assert!(
+                        pixels[y * stride + p * bpp..y * stride + (p + 1) * bpp]
+                            .iter()
+                            .all(|&v| v == 255)
+                    );
+                }
+                assert!(
+                    pixels[y * stride + 3 * bpp..(y + 1) * stride]
+                        .iter()
+                        .all(|&v| v == 0xaa)
+                );
+            }
         }
     }
 }

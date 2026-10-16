@@ -112,9 +112,14 @@ struct ShmListener {
 }
 static SHM: ShmListener = ShmListener { format: shm_format };
 unsafe extern "C" fn shm_format(data: *mut c_void, _: Proxy, format: u32) {
-    if format == 0 {
-        unsafe {
-            (*(data as *mut State)).argb = true;
+    // SAFETY: listener de wl_shm; solo registra formatos anunciados por el servidor.
+    unsafe {
+        let state = &mut *(data as *mut State);
+        match format {
+            WL_SHM_FORMAT_ARGB8888 => state.argb = true,
+            // wl_shm RGB565: opaco, R5:G6:B5 nativo, coincide con Cairo RGB16_565.
+            WL_SHM_FORMAT_RGB565 => state.rgb565 = true,
+            _ => {}
         }
     }
 }
@@ -376,16 +381,20 @@ pub fn queue_key(state: &mut State, key: u32) {
             bytes.as_mut_ptr().cast(),
             bytes.len(),
         );
-        let text = if count > 0 && (count as usize) < bytes.len() {
-            String::from_utf8_lossy(&bytes[..count as usize]).into_owned()
+        let length = if count > 0
+            && (count as usize) < bytes.len()
+            && std::str::from_utf8(&bytes[..count as usize]).is_ok()
+        {
+            count as u8
         } else {
-            String::new()
+            0
         };
         let control =
             xkb_state_mod_name_is_active(state.xkb_state, c"Control".as_ptr(), 1 << 3) > 0;
         state.keys.push_back(KeyEvent {
             sym: xkb_state_key_get_one_sym(state.xkb_state, code),
-            text,
+            text: bytes,
+            length,
             control,
         });
     }

@@ -24,7 +24,7 @@ Se necesitan Rust/Cargo (edición 2024), cc/ar para los metadatos del protocolo,
 pkg-config, headers y bibliotecas nativas. Como administrador:
 
 ```sh
-xbps-install -S gcc pkg-config rust cargo wayland-devel wayland-protocols cairo-devel libxkbcommon-devel pulseaudio-devel libsndfile-devel sound-theme-freedesktop dejavu-fonts-ttf
+xbps-install -S gcc pkg-config rust cargo wayland-devel wayland-protocols freetype-devel fontconfig-devel libxkbcommon-devel libpulseaudio libsndfile sound-theme-freedesktop dejavu-fonts-ttf
 ```
 
 Como usuario normal, desde el proyecto:
@@ -34,13 +34,17 @@ cargo build --release --locked
 ./target/release/timer-rust
 ```
 
-Las bibliotecas directas son libwayland-client, Cairo, xkbcommon, libpulse-simple,
-libpulse, libsndfile, libc y libgcc_s. Sus dependencias transitivas dependen del paquete de
-la distribución. Cairo de Void también enlaza bibliotecas X11: la aplicación no
-abre una conexión X11 y su ventana se comprobó como xdg_shell sin XWayland.
+La GUI enlaza libwayland-client, FreeType, Fontconfig, xkbcommon, libc y libgcc_s.
+No enlaza Cairo, X11 ni audio al arrancar. Las dependencias transitivas de las
+bibliotecas de fuentes dependen de la distribución. Fontconfig localiza la fuente
+monospace una vez y libera su catálogo; FreeType mantiene la fuente fija a 16 px.
+El audio carga libsndfile y libpulse-simple/libpulse bajo demanda en un ayudante
+temporal del mismo ELF. No se necesita instalar un reproductor externo. Si faltan
+sus bibliotecas, la GUI abre y muestra el error cuando se solicita sonido.
 
 build.rs invoca wayland-scanner private-code sobre el XML estable xdg-shell y
-compila sus tablas ABI. No hay lógica GUI propia escrita en C. El XML se toma de
+compila sus tablas ABI. También contrasta offsets públicos de FreeType contra
+los headers instalados; no hay lógica GUI propia escrita en C. El XML se toma de
 /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml; XDG_SHELL_XML permite
 otra ruta. CC y AR eligen herramientas, no configuran una toolchain completa de
 compilación cruzada. El backend exige ABI Linux de 64 bits; no se declara soporte
@@ -80,22 +84,28 @@ estado; comandos y audio se ejecutan fuera, sin dispatch recursivo. State y cada
 Buffer tienen dirección estable en Box hasta destruir sus listeners.
 
 Versiones negociadas acotadas: compositor/surface v3, seat/keyboard/pointer v5,
-shm v1 y xdg-shell v1. Así no llegan eventos nuevos sin listener. El dibujo usa
-Cairo sobre memfd/mmap ARGB8888, hasta dos buffers reutilizables y 32 MiB máximos
-por buffer. Fuera de ese límite hay diagnóstico y cierre. No se reescribe memoria
-hasta wl_buffer.release. Pools destruidos tras crear buffers; imágenes de tamaños
-anteriores se liberan cuando quedan libres. Drop elimina Cairo, proxies, mappings,
-XKB y conexión en orden, sin despachar callbacks durante la destrucción.
+shm v1 y xdg-shell v1. Los píxeles se dibujan en Rust sobre memfd/mmap. Se usa
+RGB565 si el servidor lo anuncia y ARGB32 como respaldo. Hasta dos buffers y
+32 MiB por buffer; no se escribe un buffer ocupado. Los tamaños anteriores se
+liberan tras release. Cada buffer recuerda revisiones de lista/pie y solo repinta
+la región que cambió. No se vuelven a crear CString para dibujar texto.
 
-Los frame callbacks limitan commits. Si una superficie oculta deja de recibirlos,
-se puede esperar al vencimiento en vez de repintar cada segundo. Falta probar todos
-los casos de ocultación y suspensión. Audio síncrono bloquea hasta drenar y libera
-su conexión; libpulse puede crear un hilo auxiliar. Se observó un hilo inactivo,
-dos durante audio y regreso a uno. No hay hilos propios ni runtime async.
+RowCache reutiliza los String de las filas y solo actualiza segundos/estados
+cambiados. El adaptador consulta esa caché al vencer el siguiente segundo o tras
+un comando que modifica cuentas. La entrada se conserva en errores sin clonarla;
+los eventos UTF-8 usan un array de 64 bytes. FreeType mantiene una caché acotada de
+256 glifos y 128 KiB de bitmaps, sin copiar textos completos.
+
+Los frame callbacks limitan commits. Si una superficie deja de recibirlos se
+puede esperar al vencimiento. El audio es síncrono: la GUI espera al ayudante
+interno sin inicializar otra ventana. El proceso temporal acota las bibliotecas,
+hilos internos y cachés de audio al tiempo de reproducción. Es un coste temporal
+medido, no un reproductor permanente. No hay hilos propios ni runtime async.
 
 ## Validación local: 2026-10-16
 
-- 14 pruebas Linux aprobadas: 12 compartidas y 2 de edición UTF-8/límites.
+- 20 pruebas Linux aprobadas: 12 compartidas y 8 de caché, entrada, fuente,
+  píxeles/regiones y bibliotecas opcionales.
 - Prueba manual de la GUI Linux en Sway/WSLg confirmada por el usuario.
 - 12 pruebas Windows aprobadas; compilación Windows correcta.
 - Formato, Clippy y Rustdoc privados con advertencias como errores correctos.
@@ -105,26 +115,21 @@ dos durante audio y regreso a uno. No hay hilos propios ni runtime async.
 - Lista desbordada y PageDown; resize 2560×1600 → 660×420 con fuente constante.
 - Sin compositor, stderr y código 1; sin salida de audio, error visible sin cerrar GUI.
 
-Se añadió una salida PulseAudio nula temporal, seleccionada solo para el proceso
-mediante PULSE_SINK. Su monitor registró PCM no nulo del archivo del tema, sin enviarlo a los
-altavoces. Se verificaron el comando sonido y un vencimiento, ambos con
-91 851 muestras no nulas y pico PCM de 12 843. Después del sonido se observaron
-20 120 KiB de RSS a 1280×800 y un hilo. RDPSink siguió predeterminado. El módulo se retira al terminar; esta
-comprobación no sustituye escuchar audio en el equipo real del destinatario.
+La corrección de memoria se verificó sin capturas ni entrada en el escritorio de
+Windows. A 660×420, RSS pasó de 12 924 a 7008 KiB; a 1280×800, de 18 764 a 9920 KiB,
+con la misma cuenta pausada. Son muestras del laboratorio, incluyendo páginas
+compartidas. El ayudante se capturó en una salida PulseAudio nula: tres alarmas no
+cambiaron el RSS de la GUI (7008 KiB antes/después, un hilo). Pico de PSS agregado
+GUI+ayudante 4629 KiB. RDPSink siguió siendo la salida predeterminada.
 
-Las cifras de RSS y resize siguientes se midieron antes de sustituir el tono
-generado por el archivo del tema; describen el renderer y esa ejecución.
-
-Binario optimizado (recompilado con audio del tema): 345 184 bytes (337,1 KiB); no incluye bibliotecas compartidas.
-En 660×420 se observaron 12 644 KiB de RSS y un hilo. En otro muestreo inactivo de
-cinco segundos no aumentaron los ticks de CPU; no es garantía de CPU cero universal.
-Al reducir 2560×1600 a 660×420, RSS pasó de 42 476 a 12 644 KiB, liberando unos
-29,1 MiB. Los mappings memfd confirmaron la retirada de imágenes grandes. Son
-mediciones puntuales de una ejecución, no un benchmark entre equipos ni memoria
-exclusiva atribuible toda a Rust.
+El ELF corregido mide 402 528 bytes (393,1 KiB), sin bibliotecas compartidas. El tamaño
+anterior era 345 184 bytes; el incremento de archivo es 56 KiB. En cinco segundos de
+reposo con cuenta pausada no se incrementaron ticks de CPU. Ver desglose, medidas y
+pruebas en [MEMORY-REVIEW.md](MEMORY-REVIEW.md).
 
 Pendientes: Void/Sway físico del destinatario, audio físico, DPI, IME/portapapeles
-si se requieren. La publicación 0.1.1 Alpha se prepara separadamente.
+si se requieren. La nueva rasterización aún requiere confirmación manual del usuario; la prueba
+manual anterior fue con el renderizador previo.
 
 ## Paquete local
 

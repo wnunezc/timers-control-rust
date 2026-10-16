@@ -5,16 +5,19 @@
 mod audio;
 mod entry;
 mod events;
+mod font;
+mod library;
 mod native;
 mod render;
 
 use crate::{
-    app::{Outcome, TimerApp},
+    app::{Outcome, RowCache, TimerApp},
     command::Command,
 };
 use entry::Entry;
+use font::Font;
 use native::*;
-use render::Buffer;
+use render::{Buffer, View};
 use std::{
     collections::VecDeque,
     ffi::c_void,
@@ -24,7 +27,8 @@ use std::{
 
 struct KeyEvent {
     sym: u32,
-    text: String,
+    text: [u8; 64],
+    length: u8,
     control: bool,
 }
 
@@ -48,6 +52,7 @@ struct State {
     xkb_state: Proxy,
     globals: [u32; 4],
     argb: bool,
+    rgb565: bool,
     configured: bool,
     running: bool,
     dirty: bool,
@@ -57,7 +62,12 @@ struct State {
     app: TimerApp,
     entry: Entry,
     status: String,
-    rows: Vec<String>,
+    rows: RowCache,
+    rows_dirty: bool,
+    rows_due: Option<Instant>,
+    rows_version: u64,
+    footer_version: u64,
+    font: Option<Font>,
     scroll: usize,
     #[expect(
         clippy::vec_box,
@@ -91,6 +101,7 @@ impl Default for State {
             xkb_state: null_mut(),
             globals: [0; 4],
             argb: false,
+            rgb565: false,
             configured: false,
             running: true,
             dirty: true,
@@ -100,7 +111,12 @@ impl Default for State {
             app: TimerApp::default(),
             entry: Entry::default(),
             status: "Prueba Wayland · escribe ayuda y pulsa Enter".into(),
-            rows: Vec::new(),
+            rows: RowCache::default(),
+            rows_dirty: true,
+            rows_due: None,
+            rows_version: 0,
+            footer_version: 0,
+            font: None,
             scroll: 0,
             buffers: Vec::new(),
             keys: VecDeque::new(),
@@ -119,6 +135,7 @@ impl State {
 
     fn present(&mut self, outcome: Outcome) {
         self.status = outcome.status;
+        self.footer_version = self.footer_version.wrapping_add(1);
         self.sound_pending |= outcome.sound;
         self.dirty = true;
     }
@@ -128,6 +145,7 @@ impl State {
         self.take_error()?;
         let now = Instant::now();
         if let Some(outcome) = self.app.advance(now) {
+            self.rows_dirty = true;
             self.present(outcome);
         }
         if let Some((key, deadline)) = self.repeat
@@ -153,17 +171,25 @@ impl State {
             } else {
                 match key.sym {
                     KEY_RETURN | KEY_KP_ENTER => {
-                        let input = self.entry.text.clone();
-                        match Command::parse(&input)
-                            .and_then(|command| self.app.execute(command, Instant::now()))
-                        {
+                        let parsed = Command::parse(&self.entry.text);
+                        let changes_rows = matches!(
+                            &parsed,
+                            Ok(Command::Create { .. }
+                                | Command::Configure { .. }
+                                | Command::Pause(_)
+                                | Command::Resume(_)
+                                | Command::Stop(_))
+                        );
+                        match parsed.and_then(|command| self.app.execute(command, Instant::now())) {
                             Ok(outcome) => {
                                 self.entry.clear();
+                                self.rows_dirty |= changes_rows;
                                 self.present(outcome);
                             }
                             Err(error) => {
                                 self.status = error;
-                                self.entry.restore(input);
+                                self.entry.cursor = self.entry.text.len();
+                                self.entry.selected = false;
                             }
                         }
                     }
@@ -181,19 +207,30 @@ impl State {
                     }
                     KEY_PAGE_UP => self.scroll = self.scroll.saturating_sub(5),
                     KEY_PAGE_DOWN => self.scroll = self.scroll.saturating_add(5),
-                    _ => self.entry.insert(&key.text),
+                    _ => self.entry.insert(
+                        std::str::from_utf8(&key.text[..key.length as usize])
+                            .expect("UTF-8 validado al encolar"),
+                    ),
                 }
             }
             self.dirty = true;
+            self.footer_version = self.footer_version.wrapping_add(1);
         }
-        let rows = self.app.rows(Instant::now());
-        if rows != self.rows {
-            self.rows = rows;
-            self.dirty = true;
+        let now = Instant::now();
+        if self.rows_dirty || self.rows_due.is_some_and(|due| due <= now) {
+            if self.app.update_rows(&mut self.rows, now) {
+                self.rows_version = self.rows_version.wrapping_add(1);
+                self.dirty = true;
+            }
+            self.rows_due = self
+                .app
+                .next_wake(now, false)
+                .and_then(|delay| now.checked_add(delay));
+            self.rows_dirty = false;
         }
         self.scroll = self
             .scroll
-            .min(self.rows.len().saturating_sub(self.visible_rows()));
+            .min(self.rows.lines.len().saturating_sub(self.visible_rows()));
         Ok(())
     }
 
@@ -215,16 +252,29 @@ impl State {
             index
         } else if self.buffers.len() < 2 {
             self.buffers
-                .push(Buffer::new(self.shm, self.width, self.height)?);
+                .push(Buffer::new(self.shm, self.width, self.height, self.rgb565)?);
             self.buffers.len() - 1
         } else {
             return Ok(());
         };
         if self.buffers[index].width != self.width || self.buffers[index].height != self.height {
-            self.buffers[index] = Buffer::new(self.shm, self.width, self.height)?;
+            self.buffers[index] = Buffer::new(self.shm, self.width, self.height, self.rgb565)?;
         }
-        let buffer = &self.buffers[index];
-        buffer.draw(&self.rows, &self.status, &self.entry, self.scroll)?;
+        let view = View {
+            rows: &self.rows.lines,
+            status: &self.status,
+            entry: &self.entry,
+            scroll: self.scroll,
+            rows_version: self.rows_version,
+            footer_version: self.footer_version,
+        };
+        let buffer = &mut self.buffers[index];
+        let damage = buffer.draw(
+            &view,
+            self.font
+                .as_mut()
+                .expect("Fuente inicializada antes de la ventana"),
+        )?;
         // SAFETY: opcodes de wl_surface v3; data estable; marshalling no despacha
         // callbacks. Los píxeles quedan ocupados hasta wl_buffer.release.
         unsafe {
@@ -247,17 +297,32 @@ impl State {
                 0i32,
                 0i32,
             );
-            wl_proxy_marshal_flags(
-                self.surface,
-                WL_SURFACE_DAMAGE,
-                null(),
-                3,
-                0,
-                0i32,
-                0i32,
-                self.width,
-                self.height,
-            );
+            if damage.list {
+                wl_proxy_marshal_flags(
+                    self.surface,
+                    WL_SURFACE_DAMAGE,
+                    null(),
+                    3,
+                    0,
+                    0i32,
+                    0i32,
+                    self.width,
+                    self.height - 80,
+                );
+            }
+            if damage.footer {
+                wl_proxy_marshal_flags(
+                    self.surface,
+                    WL_SURFACE_DAMAGE,
+                    null(),
+                    3,
+                    0,
+                    0i32,
+                    self.height - 80,
+                    self.width,
+                    80i32,
+                );
+            }
             buffer.busy.set(true);
             wl_proxy_marshal_flags(self.surface, WL_SURFACE_COMMIT, null(), 3, 0);
         }
@@ -346,6 +411,7 @@ fn connect() -> Result<Box<State>, String> {
         events::listen(state.registry, &events::REGISTRY, data)?;
     }
     let display = state.display;
+    state.font = Some(Font::new()?);
     // SAFETY: sin referencias al contenido de State a través de dispatch.
     if unsafe { wl_display_roundtrip(display) } < 0 || unsafe { wl_display_roundtrip(display) } < 0
     {
@@ -424,6 +490,11 @@ fn connect() -> Result<Box<State>, String> {
     Ok(state)
 }
 
+/// Entrada privada del ayudante de audio: no inicializa fuente ni Wayland.
+pub fn sound_helper() -> Result<(), String> {
+    audio::play_local()
+}
+
 /// Bucle monohilo y sin sondeo activo. Solo este hilo lee el display; no hay EGL,
 /// colas auxiliares ni librerías que lean su socket por detrás del poll.
 pub fn run() -> Result<(), String> {
@@ -451,6 +522,7 @@ pub fn run() -> Result<(), String> {
             state.sound_pending = false;
             if let Err(error) = audio::play() {
                 state.status = error;
+                state.footer_version = state.footer_version.wrapping_add(1);
                 state.dirty = true;
             }
             // Se relee el reloj tras audio síncrono, nunca se alargan los plazos.

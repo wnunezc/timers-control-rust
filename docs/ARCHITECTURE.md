@@ -13,11 +13,13 @@
 | `src/windows/native.rs` | Declaraciones C y constantes del SDK | DLL nativas |
 | `src/linux.rs` | Conexión, eventos y presentación Wayland | Dominio y módulos Linux |
 | `src/linux/events.rs` | Listeners y conversión de teclado | Wayland/xkbcommon |
-| `src/linux/render.rs` | Memoria compartida y texto | Wayland/Cairo |
+| `src/linux/render.rs` | Buffers y rasterización por regiones | Wayland y píxeles Rust |
 | `src/linux/entry.rs` | Edición UTF-8 y límites | std, sin unsafe |
-| `src/linux/audio.rs` | Archivo del tema por bloques, síncrono | libsndfile y PulseAudio simple |
+| `src/linux/audio.rs` | Ayudante temporal síncrono y archivo por bloques | std::process, sndfile/Pulse cargados al sonar |
+| `src/linux/font.rs` | Fuente fija y caché acotada de glifos | FreeType y Fontconfig |
+| `src/linux/library.rs` | Carga opcional RAII, usada por el ayudante | dlopen/dlsym |
 | `src/linux/native.rs` | ABI y requests con nombres | Bibliotecas nativas |
-| `build.rs` | Tablas ABI xdg-shell generadas, solo Linux | wayland-scanner, cc/ar, pkg-config |
+| `build.rs` | Tablas ABI xdg-shell y offsets FreeType, solo Linux | wayland-scanner, cc/ar, pkg-config |
 
 Flujo de entrada: texto → `Command::parse` → `TimerApp::execute` → `Outcome` → GUI/audio.
 Flujo de reloj: mensaje Win32 → `TimerApp::advance` → notificación → filas → siguiente plazo.
@@ -126,3 +128,14 @@ no los presenta como funciones implementadas.
 
 La GUI Linux Wayland está implementada y comprobada en Sway headless con glibc.
 La validación en hardware físico sigue pendiente; no acredita todo entorno Linux.
+
+## Corrección de memoria Linux
+
+RowCache reutiliza las filas y se consulta solo al cambiar el segundo/estado;
+la entrada ya no se clona al ejecutar comandos. Buffer conserva revisiones por
+región, escribe RGB565 negociado o ARGB32 de respaldo y no reconstruye textos C.
+Font sustituye Cairo y limita la caché a 256 glifos y 128 KiB de bitmaps. Los offsets
+públicos FreeType se contrastan contra headers en build.rs y contra repr(C) Rust.
+El ayudante de audio es el mismo ELF en un modo sin GUI, temporal y síncrono;
+acota al sonido los recursos que el loader no retiraba tras dlclose. Mediciones
+y límites en [MEMORY-REVIEW.md](MEMORY-REVIEW.md).

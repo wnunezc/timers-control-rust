@@ -70,7 +70,8 @@ Estos casos de comandos, estados y alarma tienen confirmación manual local.
 
 ## Linux Wayland
 
-El [backend Linux](LINUX.md) tiene 14 pruebas: las 12 compartidas y 2 de edición.
+El [backend Linux](LINUX.md) tiene 20 pruebas: las 12 compartidas y 8 de entrada, cachés,
+fuente, píxeles/regiones y carga opcional de bibliotecas.
 Ejecutar en Linux con los paquetes de desarrollo indicados en esa guía:
 
 ```sh
@@ -100,3 +101,13 @@ GPU o hardware Linux físico.
 La muestra histórica de RAM del README no es un benchmark. Working set y memoria
 privada son métricas distintas y no se suman. El tamaño del exe y las líneas de
 código no permiten deducir RAM ni ahorro de 10 MB.
+
+## Corrección de memoria Linux
+
+Las pruebas específicas comprueban reutilización de capacidad de filas/glifos,
+mezcla de píxeles y padding en RGB565/ARGB32, preservación del área de lista al
+editar solo el pie y ausencia de dibujo en un frame sin cambios. La carga de una
+biblioteca opcional inexistente devuelve error. Estos tests no abren ventanas.
+La medición del proceso y del ayudante de audio está en MEMORY-REVIEW.md; no usa
+capturas de pantalla para atribuir memoria. La nueva rasterización queda pendiente
+de validación manual del usuario.

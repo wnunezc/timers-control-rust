@@ -21,6 +21,15 @@ pub struct TimerApp {
     timers: Vec<Timer>,
 }
 
+/// Filas Linux reutilizables. La identidad por índice es estable: no hay borrado
+/// ni renombrado de cuentas. Solo cambia texto cuando cambian segundos/estado.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub struct RowCache {
+    pub lines: Vec<String>,
+    states: Vec<(u64, &'static str)>,
+}
+
 impl TimerApp {
     /// Ejecuta un comando. Los errores no reemplazan cuentas existentes.
     pub fn execute(&mut self, command: Command<'_>, now: Instant) -> Result<Outcome, String> {
@@ -77,22 +86,43 @@ impl TimerApp {
     }
 
     /// Texto con segundos redondeados hacia arriba y un instante común para filas.
+    #[cfg(any(windows, test))]
     pub fn rows(&self, now: Instant) -> Vec<String> {
         self.timers
             .iter()
             .map(|timer| {
                 let left = timer.remaining(now);
                 let seconds = left.as_secs() + u64::from(left.subsec_nanos() != 0);
-                format!(
-                    "{:02}:{:02}:{:02}  {}  [{}]",
-                    seconds / 3600,
-                    seconds / 60 % 60,
-                    seconds % 60,
-                    timer.name(),
-                    timer.label()
-                )
+                let mut text = String::with_capacity(timer.name().len() + 48);
+                row_text(&mut text, timer, seconds);
+                text
             })
             .collect()
+    }
+
+    /// Actualiza en el mismo String; el adaptador decide cuándo vence su caché.
+    #[cfg(target_os = "linux")]
+    pub fn update_rows(&self, cache: &mut RowCache, now: Instant) -> bool {
+        let mut changed = cache.lines.len() != self.timers.len();
+        for (i, timer) in self.timers.iter().enumerate() {
+            let left = timer.remaining(now);
+            let seconds = left.as_secs() + u64::from(left.subsec_nanos() != 0);
+            let state = (seconds, timer.label());
+            if i == cache.lines.len() {
+                cache
+                    .lines
+                    .push(String::with_capacity(timer.name().len() + 48));
+                cache.states.push((u64::MAX, ""));
+            }
+            if cache.states[i] != state {
+                row_text(&mut cache.lines[i], timer, seconds);
+                cache.states[i] = state;
+                changed = true;
+            }
+        }
+        cache.lines.truncate(self.timers.len());
+        cache.states.truncate(self.timers.len());
+        changed
     }
 
     /// Próximo cambio de segundo visible o vencimiento si está minimizado.
@@ -117,12 +147,44 @@ impl TimerApp {
     }
 }
 
+/// Un único formato para la lista Win32 y la caché Linux.
+fn row_text(text: &mut String, timer: &Timer, seconds: u64) {
+    use std::fmt::Write;
+    text.clear();
+    let _ = write!(
+        text,
+        "{:02}:{:02}:{:02}  {}  [{}]",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60,
+        timer.name(),
+        timer.label()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn execute(app: &mut TimerApp, text: &str, now: Instant) -> Result<Outcome, String> {
         app.execute(Command::parse(text)?, now)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn row_cache_reuses_storage_and_ignores_unchanged_updates() {
+        let now = Instant::now();
+        let mut app = TimerApp::default();
+        execute(&mut app, "crear uno 20s", now).unwrap();
+        let mut cache = RowCache::default();
+        assert!(app.update_rows(&mut cache, now));
+        let array = cache.lines.as_ptr();
+        let text = cache.lines[0].as_ptr();
+        assert!(!app.update_rows(&mut cache, now));
+        assert!(app.update_rows(&mut cache, now + Duration::from_secs(1)));
+        assert_eq!(cache.lines.as_ptr(), array);
+        assert_eq!(cache.lines[0].as_ptr(), text);
+        assert!(cache.lines[0].starts_with("00:00:19"));
     }
 
     #[test]
