@@ -68,6 +68,25 @@ continuar uno
 `uno` conserva finalizado y no vuelve a sonar; continuar muestra un error.
 Estos casos de comandos, estados y alarma tienen confirmación manual local.
 
+## Linux Wayland
+
+El [backend Linux](LINUX.md) tiene 14 pruebas: las 12 compartidas y 2 de edición.
+Ejecutar en Linux con los paquetes de desarrollo indicados en esa guía:
+
+```sh
+cargo test --release --locked
+cargo clippy --all-targets -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --document-private-items
+```
+
+La GUI se probó en [Sway headless](LINUX-LAB.md), sin XWayland: comandos, estados,
+vencimiento, alarma, UTF-8, entrada inválida/corrección, lista desplazable,
+redimensionado y fallos de conexión/audio. Las mediciones están en LINUX.md.
+El audio se capturó en salida nula; escuchar sonido físico sigue pendiente.
+El usuario confirmó además la prueba manual de la GUI Linux en Sway anidado
+en WSLg antes de preparar la 0.1.1 Alpha. Esa confirmación no acredita otra distro,
+GPU o hardware Linux físico.
+
 ## Pendientes y límites de la evidencia
 
 - Prueba específica de cierre, minimizar/restaurar y DPI por monitor.

@@ -4,13 +4,20 @@
 
 | Archivo | Responsabilidad | Dependencias |
 | --- | --- | --- |
-| `src/main.rs` | Arranque y diagnóstico de salida | Adaptador Windows |
+| `src/main.rs` | Arranque y diagnóstico de salida | Adaptador Windows o Linux según destino |
 | `src/duration.rs` | Validar y convertir duraciones | `std::time::Duration` |
 | `src/command.rs` | Convertir texto a `Command` tipado | Parser de duración |
 | `src/timers.rs` | Estado y transiciones de una cuenta | `std::time` |
 | `src/app.rs` | Casos de uso, colección, filas y próxima actualización | Comandos y temporizadores |
 | `src/windows.rs` | Propiedad de recursos, presentación, audio y eventos | Dominio y ABI Win32 |
 | `src/windows/native.rs` | Declaraciones C y constantes del SDK | DLL nativas |
+| `src/linux.rs` | Conexión, eventos y presentación Wayland | Dominio y módulos Linux |
+| `src/linux/events.rs` | Listeners y conversión de teclado | Wayland/xkbcommon |
+| `src/linux/render.rs` | Memoria compartida y texto | Wayland/Cairo |
+| `src/linux/entry.rs` | Edición UTF-8 y límites | std, sin unsafe |
+| `src/linux/audio.rs` | Archivo del tema por bloques, síncrono | libsndfile y PulseAudio simple |
+| `src/linux/native.rs` | ABI y requests con nombres | Bibliotecas nativas |
+| `build.rs` | Tablas ABI xdg-shell generadas, solo Linux | wayland-scanner, cc/ar, pkg-config |
 
 Flujo de entrada: texto → `Command::parse` → `TimerApp::execute` → `Outcome` → GUI/audio.
 Flujo de reloj: mensaje Win32 → `TimerApp::advance` → notificación → filas → siguiente plazo.
@@ -19,6 +26,8 @@ Flujo de reloj: mensaje Win32 → `TimerApp::advance` → notificación → fila
 pueden probar los casos de uso sin escritorio ni dispositivo de audio. La vista
 posee el caché de filas; la lógica de temporización no conoce HWND ni el reproductor.
 El dominio y los parsers prohíben `unsafe` mediante `#![forbid(unsafe_code)]`.
+El adaptador Linux comparte ese dominio sin introducir Win32 allí. Sus contratos
+de memoria, eventos y comprobaciones se detallan en [LINUX.md](LINUX.md).
 
 ## POO, DRY y SOLID en Rust
 
@@ -111,6 +120,9 @@ pequeñas pueden solapar controles; la ayuda y nombres largos pueden quedar reco
 No hay navegación completa de diálogo con Tab ni historial de comandos. El estado
 de selección de la lista no determina el objetivo: el nombre del comando lo determina.
 
-Audio de archivos, persistencia, recurrencias, otras plataformas, DPI por monitor,
+Audio configurable y extracción, persistencia, recurrencias, otras plataformas, DPI por monitor,
 suspensión del sistema y XP x86 necesitan requisitos o validación propios. La revisión
 no los presenta como funciones implementadas.
+
+La GUI Linux Wayland está implementada y comprobada en Sway headless con glibc.
+La validación en hardware físico sigue pendiente; no acredita todo entorno Linux.

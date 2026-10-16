@@ -1,8 +1,9 @@
 # Timer-Rust
 
 Temporizadores de cuenta regresiva con GUI nativa, entrada de comandos y sonido
-del sistema. Implementación inicial para **Windows 11 de 64 bits**, escrita en
-Rust con `std` y FFI a bibliotecas del sistema, sin crates externos.
+del sistema. Implementaciones para **Windows 11 x64** y **Linux Wayland** (probada
+localmente en Void/glibc/Sway), escritas en Rust con `std` y FFI a bibliotecas del
+sistema, sin crates externos.
 
 ## Créditos
 
@@ -16,9 +17,15 @@ La implementación del código en Rust corresponde a
 
 La validación manual cubre creación, pausa, continuación, detención, vencimiento,
 reconfiguración y rechazo de continuación de un finalizado sin repetir su alarma.
-La versión [0.1.0 Alpha](https://github.com/wnunezc/timers-control-rust/releases/tag/v0.1.0-alpha)
-distribuye un ejecutable optimizado para Windows x64 y su checksum SHA-256.
-La prueba manual del binario optimizado y las métricas reproducibles siguen pendientes.
+La **0.1.1 Alpha** añade soporte básico de Linux x86_64 con glibc y Wayland,
+validado en Void/Sway, incluido el uso manual dentro de WSLg. Conserva el backend
+Windows x64. Ver [notas de versión](docs/releases/0.1.1-alpha.md) y
+[compilación, ejecución y límites Linux](docs/LINUX.md).
+
+Los distribuibles preparados incluyen un EXE Windows, un paquete Linux y
+checksums SHA-256. Su preparación local no implica que estén publicados en GitHub.
+La [0.1.0 Alpha](https://github.com/wnunezc/timers-control-rust/releases/tag/v0.1.0-alpha)
+es la publicación anterior, exclusivamente para Windows.
 
 ## Compilación y ejecución
 
@@ -49,6 +56,10 @@ cargo build --release --locked --target x86_64-pc-windows-msvc
 El resultado está en `target/x86_64-pc-windows-msvc/release/timer-rust.exe`.
 La primera Alpha tiene pruebas unitarias optimizadas e inspección de dependencias;
 la ejecución gráfica manual de este binario concreto sigue pendiente.
+
+En Linux se compila con `cargo build --release --locked` y se ejecuta
+`./target/release/timer-rust` desde una sesión Wayland. Requiere las bibliotecas
+nativas y herramientas indicadas en [docs/LINUX.md](docs/LINUX.md); no usa XWayland.
 
 ## Comandos
 
@@ -99,25 +110,32 @@ han sido definidos por el usuario.
 ## Interfaz, audio y consumo
 
 - Lista vertical arriba a la izquierda, estado y entrada de comandos abajo.
-- Fuente Consolas de altura lógica fija de 16 unidades, sin adaptarse al tamaño de
+- Fuente Consolas en Windows y monospace en Linux, de altura lógica fija de 16 unidades, sin adaptarse al tamaño de
   la ventana. Windows puede sustituirla si falta o escalarla según la configuración
   de pantalla; no se ha implementado un contrato de DPI por monitor.
-- Controles nativos `LISTBOX`, `STATIC` y `EDIT`; sin webview ni framework gráfico.
-- `GetMessageW` bloquea el hilo cuando no hay mensajes. Sin cuentas activas se
+- Controles Win32 `LISTBOX`, `STATIC` y `EDIT`; Linux dibuja con Cairo sobre Wayland,
+  sin GTK ni webview. El backend gráfico compilado se selecciona por plataforma.
+- En Windows `GetMessageW` bloquea el hilo cuando no hay mensajes. Sin cuentas activas se
   cancela el timer de Windows. Minimizado, se espera al siguiente vencimiento.
 - Los plazos se calculan con `Instant`; retrasar un mensaje no alarga una cuenta.
   No hay garantía de tiempo real ni se ha verificado suspensión/hibernación.
 - El código no crea hilos, funciones async ni runtime asíncrono. Windows y sus
   bibliotecas pueden crear hilos internos: no se afirma que el proceso tenga uno solo.
-- El alias `SystemExclamation` se reproduce con `PlaySoundW` síncrono. **La GUI
+- En Windows, el alias `SystemExclamation` se reproduce con `PlaySoundW` síncrono. **La GUI
   queda bloqueada durante el sonido.** La reproducción depende del esquema de sonido,
   dispositivo y volumen configurados por el usuario; no hay fallback intencional.
+- Linux reproduce `/usr/share/sounds/freedesktop/stereo/complete.oga` del tema
+  del sistema mediante libsndfile y PulseAudio/PipeWire-Pulse,
+  también síncrono. El proceso vuelve a un hilo después del audio en la prueba local.
 - Si se detectan varios vencimientos en una misma actualización, la implementación
   actual emite un sonido y lista sus nombres. La política definitiva de concurrencia
   de alarmas sigue pendiente de definición.
-- No hay lecturas de archivos de audio, extracción de segmentos ni file-dialogs.
+- Linux lee ese archivo del sistema por bloques; faltan rutas de audio elegibles
+  por comando/configuración y extracción de segmentos. No hay file-dialogs.
 
-No se han demostrado ahorros de al menos 10 MB ni cifras de consumo representativas.
+En Linux, liberar buffers de tamaños anteriores recuperó unos 29,1 MiB de RSS
+en la prueba documentada en [docs/LINUX.md](docs/LINUX.md). Son muestras locales;
+no se han establecido cifras de consumo representativas entre equipos.
 La revisión conserva estructuras simples y evita asignar un vector de tokens por
 comando. La lista se reconstruye solo cuando cambia su texto; en cada actualización
 visible aún se construyen cadenas de las filas, con coste lineal en el número de cuentas.
@@ -129,6 +147,8 @@ aplicación de POO/DRY/SOLID, recursos nativos y decisiones de diseño.
 Consultar [docs/TESTING.md](docs/TESTING.md) para pruebas y pendientes.
 El código tiene documentación de módulos, contratos de métodos y
 justificaciones de los bloques `unsafe` del adaptador Win32.
+El adaptador Linux tiene sus propios contratos de memoria, callbacks y bibliotecas
+en [docs/LINUX.md](docs/LINUX.md), manteniendo el dominio compartido.
 
 ## Líneas y peso local
 
@@ -136,23 +156,23 @@ Medición del 2026-10-16 después de la revisión, sin abrir la aplicación:
 
 | Módulo | Líneas físicas |
 | --- | ---: |
-| `src/windows.rs`: ventana, recursos, audio y eventos | 426 |
-| `src/windows/native.rs`: ABI y constantes Win32 | 174 |
-| `src/app.rs`: comandos ejecutados, filas y planificación | 195 |
-| `src/timers.rs`: estado de cada temporizador | 179 |
-| `src/duration.rs`: formatos de duración | 116 |
-| `src/command.rs`: gramática de comandos | 67 |
-| `src/main.rs`: entrada | 20 |
-| **Total Rust** | **1177** |
+| `src/windows.rs` y `src/windows/native.rs` | 600 |
+| `src/app.rs`, `timers.rs`, `duration.rs`, `command.rs`: núcleo compartido | 557 |
+| `src/linux.rs` y `src/linux/`: Wayland, ABI, dibujo, entrada y audio | 1704 |
+| `src/main.rs`: entrada | 28 |
+| `build.rs`: metadatos del protocolo en compilación | 61 |
+| **Total Rust** | **2950** |
 
-De ese total, 211 líneas pertenecen a módulos de pruebas, con sus comentarios y
-espacios: no se incluyen en el ejecutable normal. El total contiene 109 líneas
-completas de comentarios/documentación y 81 vacías; estas categorías se superponen
-con las pruebas y no deben restarse dos veces. Las otras 987 son líneas de sintaxis
+De ese total, 238 líneas pertenecen a módulos de pruebas, con sus comentarios y
+espacios: no se incluyen en el ejecutable normal. El total contiene 185 líneas
+completas de comentarios/documentación y 149 vacías; estas categorías se superponen
+con las pruebas y no deben restarse dos veces. Las otras 2616 son líneas de sintaxis
 Rust, incluidas llaves, atributos y declaraciones; no equivalen a instrucciones de CPU.
-Los archivos Rust ocupan en conjunto 41 566 bytes, aproximadamente 40,6 KiB.
+Los archivos Rust ocupan en conjunto 100 103 bytes, aproximadamente 97,8 KiB.
 
-GUI y declaraciones Win32 suman 600 líneas: el acceso directo al sistema exige
+GUI y declaraciones Win32 suman 600 líneas; el nuevo backend Linux añade listeners,
+gestión explícita de teclado y buffers que Win32 ofrece como controles preparados.
+El acceso directo al sistema exige
 declarar manualmente estructuras, firmas y constantes que un crate normalmente
 proporcionaría. La documentación, el formato y las pruebas aumentan las líneas sin
 implicar por sí mismos mayor consumo de la aplicación.
@@ -163,9 +183,13 @@ implicar por sí mismos mayor consumo de la aplicación.
 | Versión refactorizada debug, `target/review/debug/timer-rust.exe` | 249 856 bytes = 244 KiB |
 | Referencia release anterior a la revisión | 130 560 bytes = 127,5 KiB |
 | Release 0.1.0 Alpha con runtime C estático | 227 840 bytes = 222,5 KiB |
+| Backend Linux optimizado local, con bibliotecas compartidas | 345 184 bytes = 337,1 KiB |
+| Windows debug recompilado tras añadir selección de plataforma | 349 184 bytes = 341 KiB |
+| Release 0.1.1 Alpha Windows x64 | 227 840 bytes = 222,5 KiB |
+| Paquete 0.1.1 Alpha Linux x86_64 tar.gz, con guía y avisos | 169 965 bytes = 166 KiB |
 
-Para esta versión local de desarrollo, el ejecutable esperado es por tanto de
-**aproximadamente 250 KB en disco**. El release Alpha ocupa aproximadamente 228 KB;
+Los tamaños son mediciones de builds distintos, no un presupuesto de RAM. El
+release Alpha Windows ocupa aproximadamente 228 KB y el Linux local unos 345 KB;
 la diferencia con el release histórico se debe también a incluir el runtime C.
 El tamaño puede cambiar con el compilador y las opciones de enlace. Las carpetas de
 build, PDB, herramientas y documentación generada no forman parte del peso del exe.
@@ -176,14 +200,22 @@ registró 20 893 696 bytes de working set (19,9 MiB) y 2 985 984 bytes privados
 y bibliotecas nativas, no solo su código Rust. Esta muestra no permite asegurar el
 consumo esperado en reposo, con audio o con más cuentas; falta un benchmark reproducible.
 Tampoco permite deducir el consumo a partir de la cantidad de líneas o del tamaño del exe.
+En Linux se observó RSS de 12 644 KiB con ventana 660×420 y un hilo. Al reducir una
+ventana 2560×1600 a ese tamaño se retiraron buffers grandes y RSS bajó unos 29,1 MiB.
+El detalle y alcance de estas mediciones puntuales están en docs/LINUX.md.
 
 ## Compatibilidad pendiente
 
-La GUI multiplataforma y Windows XP de 32 bits siguen siendo objetivos. No están
-implementados ni validados. Solo hay adaptador Windows y pruebas locales x64;
+Para preparar el desarrollo nativo de Linux existe un
+[laboratorio Void Linux con glibc y Sway/Wayland](docs/LINUX-LAB.md), con pantalla
+virtual aislada y las 12 pruebas del núcleo ejecutadas correctamente en Linux.
+La GUI Wayland está implementada y comprobada en ese laboratorio.
+
+Hay adaptadores Windows y Linux Wayland; faltan otros sistemas y la validación
+Linux en el equipo físico del destinatario. Windows XP de 32 bits sigue pendiente;
 compilar para x86 por sí solo no acredita XP. El código de dominio está separado
-para reutilizarlo al implementar otros adaptadores. Fuera de Windows, el punto de
-entrada actual solo informa que la GUI no está implementada.
+para reutilizarlo al implementar otros adaptadores. Las plataformas distintas de
+Windows y Linux todavía no tienen GUI.
 
 El soporte oficial actual de Rust no incluye XP. La ruta de toolchain, biblioteca
 estándar, linker, CPU, imports y pruebas reales en XP requiere una investigación
