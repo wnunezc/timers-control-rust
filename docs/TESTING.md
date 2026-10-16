@@ -19,6 +19,17 @@ predeterminado. RUSTDOCFLAGS afecta solo a la sesión actual de PowerShell.
 
 Resultado registrado el 2026-10-16: 12 pruebas pasan; formato, Clippy, compilación
 de desarrollo y documentación privada con advertencias como errores correctos.
+Para la Alpha también pasan las 12 pruebas con optimización y runtime C estático:
+
+```powershell
+cargo test --release --locked --target x86_64-pc-windows-msvc
+cargo build --release --locked --target x86_64-pc-windows-msvc
+```
+
+La inspección PE confirma x64 y subsistema Windows GUI. Con CRT estático, las
+dependencias importadas son USER32, WINMM, KERNEL32, GDI32, ntdll y el contrato
+de API de sincronización de Windows; no se importa VCRUNTIME140.dll ni UCRT dinámico.
+El ejecutable Alpha concreto aún no tiene prueba manual de GUI registrada.
 
 La suite cubre formatos de duración, Unicode y overflow, argumentos faltantes y
 extra, invariantes del constructor, pausa/continuación, detención, vencimiento
@@ -60,8 +71,8 @@ Estos casos de comandos, estados y alarma tienen confirmación manual local.
 ## Pendientes y límites de la evidencia
 
 - Prueba específica de cierre, minimizar/restaurar y DPI por monitor.
-- Ejecución de release. Un intento previo recibió un error de archivo en uso;
-  su causa no está identificada.
+- Ejecución manual de la GUI de release. Un intento histórico recibió un error de
+  archivo en uso; esta publicación verifica build, pruebas e imports, sin abrir la GUI.
 - Medición reproducible de memoria y CPU en reposo, activo, minimizado y con audio,
   indicando cantidad de cuentas, duración de muestreo y herramientas usadas.
 - Ensayos de ABI, imports y ejecución real si se implementa Windows XP x86.

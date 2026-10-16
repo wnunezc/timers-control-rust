@@ -16,7 +16,9 @@ La implementación del código en Rust corresponde a
 
 La validación manual cubre creación, pausa, continuación, detención, vencimiento,
 reconfiguración y rechazo de continuación de un finalizado sin repetir su alarma.
-Release y métricas reproducibles siguen pendientes.
+La versión [0.1.0 Alpha](https://github.com/wnunezc/timers-control-rust/releases/tag/v0.1.0-alpha)
+distribuye un ejecutable optimizado para Windows x64 y su checksum SHA-256.
+La prueba manual del binario optimizado y las métricas reproducibles siguen pendientes.
 
 ## Compilación y ejecución
 
@@ -35,10 +37,18 @@ El binario contiene código máquina; no necesita Cargo ni un intérprete para
 ejecutarse. Sí utiliza DLL de Windows; «sin dependencias» significa aquí sin crates
 externos, no independencia de las bibliotecas del sistema.
 
-Existe un perfil `release` con optimización por tamaño, LTO, una unidad de
-compilación, eliminación de símbolos y abort en panic. La primera ejecución de ese
-perfil no pudo validarse porque Windows indicó que el archivo estaba en uso.
-No se atribuye ese bloqueo a ningún proceso sin evidencia.
+El perfil `release` usa optimización por tamaño, LTO, una unidad de compilación,
+eliminación de símbolos y abort en panic. `.cargo/config.toml` incluye estáticamente
+el runtime C para `x86_64-pc-windows-msvc`, evitando requerir VCRUNTIME140.dll.
+Las DLL del sistema Windows siguen siendo necesarias. Compilar el distribuible:
+
+```powershell
+cargo build --release --locked --target x86_64-pc-windows-msvc
+```
+
+El resultado está en `target/x86_64-pc-windows-msvc/release/timer-rust.exe`.
+La primera Alpha tiene pruebas unitarias optimizadas e inspección de dependencias;
+la ejecución gráfica manual de este binario concreto sigue pendiente.
 
 ## Comandos
 
@@ -152,12 +162,13 @@ implicar por sí mismos mayor consumo de la aplicación.
 | Primera versión debug probada manualmente | 257 536 bytes = 251,5 KiB |
 | Versión refactorizada debug, `target/review/debug/timer-rust.exe` | 249 856 bytes = 244 KiB |
 | Referencia release anterior a la revisión | 130 560 bytes = 127,5 KiB |
+| Release 0.1.0 Alpha con runtime C estático | 227 840 bytes = 222,5 KiB |
 
 Para esta versión local de desarrollo, el ejecutable esperado es por tanto de
-**aproximadamente 250 KB en disco**. El release de referencia fue medido antes de
-la revisión; el archivo ya no estaba presente al hacer este inventario. No se ha
-recompilado release ni se garantiza el tamaño de su próxima compilación. Las carpetas
-de build, PDB, herramientas y documentación generada no forman parte del peso del exe.
+**aproximadamente 250 KB en disco**. El release Alpha ocupa aproximadamente 228 KB;
+la diferencia con el release histórico se debe también a incluir el runtime C.
+El tamaño puede cambiar con el compilador y las opciones de enlace. Las carpetas de
+build, PDB, herramientas y documentación generada no forman parte del peso del exe.
 
 La RAM es otra medida: una lectura previa aislada de debug, en condiciones no controladas,
 registró 20 893 696 bytes de working set (19,9 MiB) y 2 985 984 bytes privados
