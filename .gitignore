@@ -1,0 +1,16 @@
+/target/
+
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+SKILL.md
+.codex/
+.agents/
+.claude/
+.cursor/
+.ai/
+.aider*
+.github/copilot-instructions.md
+.github/instructions/
+
+/docs/VALIDATION.md

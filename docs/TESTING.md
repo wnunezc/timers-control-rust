@@ -1,0 +1,72 @@
+# Pruebas
+
+Entorno de validación inicial: Windows 11 Pro x64, Rust/Cargo 1.98.1 y destino
+`x86_64-pc-windows-msvc`. Las pruebas unitarias no abren ventanas ni reproducen audio.
+
+## Comprobaciones automatizadas
+
+```powershell
+cargo fmt --check
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo build --target-dir target/review
+$env:RUSTDOCFLAGS = '-D warnings'
+cargo doc --no-deps --document-private-items
+```
+
+`target/review` separa el ejecutable de comprobación del ejecutable de desarrollo
+predeterminado. RUSTDOCFLAGS afecta solo a la sesión actual de PowerShell.
+
+Resultado registrado el 2026-10-16: 12 pruebas pasan; formato, Clippy, compilación
+de desarrollo y documentación privada con advertencias como errores correctos.
+
+La suite cubre formatos de duración, Unicode y overflow, argumentos faltantes y
+extra, invariantes del constructor, pausa/continuación, detención, vencimiento
+tardío sin repetición, aislamiento por nombre, nombres duplicados, reconfiguración
+válida e inválida, vencimientos conjuntos, planificación en reposo y minimizado,
+y solicitud de audio como datos sin efectos externos. El tiempo se suministra
+mediante `Instant`; no se usan sleeps para simular cuentas reales.
+
+## Comprobación manual
+
+En la entrada inferior, ejecutar cada comando pulsando Enter:
+
+```text
+crear uno 02:00
+crear dos 0200
+pausar uno
+```
+
+`uno` debe conservar su tiempo y mostrar pausado; `dos` debe continuar descontando.
+Al cambiar el tamaño de ventana, la fuente mantiene su tamaño y la entrada sigue abajo.
+
+```text
+continuar uno
+parar dos
+configurar uno 00:05
+```
+
+`dos` permanece detenido en la lista. `uno` inicia cinco segundos, termina y emite
+una alarma. Después:
+
+```text
+parar uno
+continuar uno
+```
+
+`uno` conserva finalizado y no vuelve a sonar; continuar muestra un error.
+Estos casos de comandos, estados y alarma tienen confirmación manual local.
+
+## Pendientes y límites de la evidencia
+
+- Prueba específica de cierre, minimizar/restaurar y DPI por monitor.
+- Ejecución de release. Un intento previo recibió un error de archivo en uso;
+  su causa no está identificada.
+- Medición reproducible de memoria y CPU en reposo, activo, minimizado y con audio,
+  indicando cantidad de cuentas, duración de muestreo y herramientas usadas.
+- Ensayos de ABI, imports y ejecución real si se implementa Windows XP x86.
+- Fallos de memoria del LISTBOX: comprobados en código, sin inyección de errores.
+
+La muestra histórica de RAM del README no es un benchmark. Working set y memoria
+privada son métricas distintas y no se suman. El tamaño del exe y las líneas de
+código no permiten deducir RAM ni ahorro de 10 MB.
