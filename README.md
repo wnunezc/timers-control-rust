@@ -4,6 +4,16 @@ Temporizadores de cuenta regresiva con GUI nativa, entrada de comandos y sonido
 del sistema. Implementación inicial para **Windows 11 de 64 bits**, escrita en
 Rust con `std` y FFI a bibliotecas del sistema, sin crates externos.
 
+## Créditos
+
+Todos los créditos conceptuales de este proyecto corresponden a
+[elhacker1000](https://gitlab.com/elhacker1000).
+
+La implementación del código en Rust corresponde a
+[Walter Nuñez (wnunezc)](https://github.com/wnunezc).
+
+## Estado
+
 La validación manual cubre creación, pausa, continuación, detención, vencimiento,
 reconfiguración y rechazo de continuación de un finalizado sin repetir su alarma.
 Release y métricas reproducibles siguen pendientes.
