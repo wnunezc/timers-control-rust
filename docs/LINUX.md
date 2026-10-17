@@ -75,6 +75,16 @@ No hay todavía portapapeles, selección parcial con ratón, IME, composición d
 muertas, navegación por Tab ni decoración del lado del cliente. La barra y controles
 de ventana los decide el compositor. Se probó escala 1, no DPI por monitor.
 
+### Corrección en 0.1.2 Alpha: recepción del teclado
+
+La 0.1.1 publicada lee el descriptor del keymap desde su posición actual. Si llega
+desplazado, puede entregar texto vacío o incompleto a xkbcommon y abortar con
+`XKB-822` / `xkbcommon rechazó el keymap`, aun con una descripción válida.
+El código corregido usa `FileExt::read_exact_at` desde el byte cero sin modificar
+la posición compartida, exige el tamaño anunciado y valida el terminador NUL.
+No añade bibliotecas, hilos ni lecturas periódicas. La prueba de regresión está
+descrita en [TESTING.md](TESTING.md). El parche se incluye en 0.1.2 Alpha.
+
 ## Eventos y propiedad
 
 Solo el hilo GUI lee el display. Antes de poll se despachan eventos pendientes y
@@ -133,8 +143,8 @@ manual anterior fue con el renderizador previo.
 
 ## Paquete local
 
-El distribuible es `timer-rust-v0.1.1-alpha-linux-x86_64.tar.gz`, preparado en
-`target/dist/v0.1.1-alpha/`, con el ELF ejecutable, guía de uso, avisos xdg-shell
+El distribuible es `timer-rust-v0.1.2-alpha-linux-x86_64.tar.gz`, preparado en
+`target/dist/v0.1.2-alpha/`, con el ELF ejecutable, guía de uso, avisos xdg-shell
 y SHA256SUMS.txt interno. El listado externo SHA256SUMS.txt verifica el tar y el
 EXE Windows. Se comprueban checksums y permisos Unix 0755/0644 al empaquetar.
 Preparar estos archivos no publica una versión en GitHub.

@@ -19,13 +19,12 @@ La validación manual cubre creación, pausa, continuación, detención, vencimi
 reconfiguración y rechazo de continuación de un finalizado sin repetir su alarma.
 La **0.1.1 Alpha** añade soporte básico de Linux x86_64 con glibc y Wayland,
 validado en Void/Sway, incluido el uso manual dentro de WSLg. Conserva el backend
-Windows x64. Ver [notas de versión](docs/releases/0.1.1-alpha.md) y
+Windows x64. La **0.1.2 Alpha** corrige la lectura del mapa de teclado Wayland que
+podía impedir el inicio con `XKB-822`. Ver [notas de versión](docs/releases/0.1.2-alpha.md) y
 [compilación, ejecución y límites Linux](docs/LINUX.md).
 
-Los distribuibles preparados incluyen un EXE Windows, un paquete Linux y
-checksums SHA-256. Su preparación local no implica que estén publicados en GitHub.
-La [0.1.0 Alpha](https://github.com/wnunezc/timers-control-rust/releases/tag/v0.1.0-alpha)
-es la publicación anterior, exclusivamente para Windows.
+Los distribuibles incluyen un EXE Windows, un paquete Linux y checksums SHA-256.
+Están disponibles en [las versiones de GitHub](https://github.com/wnunezc/timers-control-rust/releases).
 
 ## Compilación y ejecución
 
@@ -191,7 +190,7 @@ implicar por sí mismos mayor consumo de la aplicación.
 | Backend Linux corregido, bibliotecas compartidas | 402 528 bytes = 393,1 KiB |
 | Windows debug recompilado tras añadir selección de plataforma | 349 184 bytes = 341 KiB |
 | Release 0.1.1 Alpha Windows x64 | 228 352 bytes = 223 KiB |
-| Paquete 0.1.1 Alpha Linux x86_64 tar.gz, con guía y avisos | 200 830 bytes = 196,1 KiB |
+| Paquete 0.1.1 Alpha Linux x86_64 tar.gz, con guía y avisos | 200 766 bytes = 196,1 KiB |
 
 Los tamaños son mediciones de builds distintos, no un presupuesto de RAM. El
 release Alpha Windows ocupa aproximadamente 228 KB y el Linux corregido unos 403 KB;

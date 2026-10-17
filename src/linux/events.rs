@@ -5,8 +5,8 @@ use super::{KeyEvent, State, native::*};
 use std::{
     ffi::{CStr, c_char, c_void},
     fs::File,
-    io::Read,
     os::fd::FromRawFd,
+    os::unix::fs::FileExt,
     ptr::{null, null_mut},
     time::{Duration, Instant},
 };
@@ -282,13 +282,19 @@ unsafe extern "C" fn keymap(data: *mut c_void, _: Proxy, format: u32, fd: i32, s
             state.error = Some("Keymap Wayland inválido o demasiado grande".into());
             return;
         }
-        let mut bytes = Vec::with_capacity(size as usize + 1);
-        if file.take(size as u64).read_to_end(&mut bytes).is_err() {
-            state.error = Some("No se pudo leer el keymap".into());
+        // El descriptor puede compartir posición con el compositor u otros
+        // clientes. Leer desde cero con pread no depende de ella ni la modifica.
+        let mut bytes = vec![0; size as usize];
+        if let Err(error) = file.read_exact_at(&mut bytes, 0) {
+            state.error = Some(format!("No se pudo leer el keymap completo: {error}"));
             return;
         }
-        bytes.push(0);
-        let map = xkb_keymap_new_from_string(state.xkb_context, bytes.as_ptr().cast(), 1, 0);
+        // Wayland xkb_v1 entrega una cadena terminada en NUL, incluido en size.
+        let Ok(text) = CStr::from_bytes_with_nul(&bytes) else {
+            state.error = Some("Keymap Wayland sin terminador NUL válido".into());
+            return;
+        };
+        let map = xkb_keymap_new_from_string(state.xkb_context, text.as_ptr(), 1, 0);
         if map.is_null() {
             state.error = Some("xkbcommon rechazó el keymap".into());
             return;
@@ -443,5 +449,49 @@ unsafe extern "C" fn axis(data: *mut c_void, _: Proxy, _: u32, axis: u32, value:
             state.scroll.saturating_sub(3)
         };
         state.dirty = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{Seek, SeekFrom, Write},
+        os::fd::IntoRawFd,
+    };
+
+    const KEYMAP: &[u8] = b"xkb_keymap { xkb_keycodes { minimum = 8; maximum = 255; <ESC> = 9; }; xkb_types { type \"ONE_LEVEL\" { modifiers = None; map[None] = Level1; }; }; xkb_compatibility {}; xkb_symbols { key <ESC> { [ Escape ] }; }; };\0";
+
+    #[test]
+    fn keymap_ignores_shared_file_offset() {
+        for offset in [KEYMAP.len() as u64, 17, 0] {
+            // SAFETY: descriptor anónimo propio; el callback recibe su propiedad.
+            let fd = unsafe { memfd_create(c"timer-rust-keymap-test".as_ptr(), 1) };
+            assert!(fd >= 0);
+            let mut file = unsafe { File::from_raw_fd(fd) };
+            file.write_all(KEYMAP).unwrap();
+            file.seek(SeekFrom::Start(offset)).unwrap();
+            let mut observer = file.try_clone().unwrap();
+            let mut state = State::default();
+            // SAFETY: contexto propio, State vivo y descriptor transferido una vez.
+            unsafe {
+                state.xkb_context = xkb_context_new(0);
+                assert!(!state.xkb_context.is_null());
+                keymap(
+                    (&raw mut state).cast(),
+                    null_mut(),
+                    1,
+                    file.into_raw_fd(),
+                    KEYMAP.len() as u32,
+                );
+            }
+            assert!(state.error.is_none(), "offset {offset}: {:?}", state.error);
+            assert!(!state.xkb_state.is_null());
+            assert_eq!(
+                unsafe { xkb_state_key_get_one_sym(state.xkb_state, 9) },
+                0xff1b
+            );
+            assert_eq!(observer.stream_position().unwrap(), offset);
+        }
     }
 }

@@ -70,8 +70,8 @@ Estos casos de comandos, estados y alarma tienen confirmación manual local.
 
 ## Linux Wayland
 
-El [backend Linux](LINUX.md) tiene 20 pruebas: las 12 compartidas y 8 de entrada, cachés,
-fuente, píxeles/regiones y carga opcional de bibliotecas.
+El [backend Linux](LINUX.md) tiene 21 pruebas: las 12 compartidas y 9 de entrada, cachés,
+fuente, píxeles/regiones, carga opcional de bibliotecas y recepción del keymap.
 Ejecutar en Linux con los paquetes de desarrollo indicados en esa guía:
 
 ```sh
@@ -111,3 +111,14 @@ biblioteca opcional inexistente devuelve error. Estos tests no abren ventanas.
 La medición del proceso y del ayudante de audio está en MEMORY-REVIEW.md; no usa
 capturas de pantalla para atribuir memoria. La nueva rasterización queda pendiente
 de validación manual del usuario.
+
+## Regresión del keymap Wayland
+
+La prueba `keymap_ignores_shared_file_offset` entrega un keymap válido al callback
+real con el descriptor situado al final, en un punto intermedio y al principio.
+Comprueba que Escape se interpreta correctamente y que la posición compartida
+no cambia. En la 0.1.1 Alpha publicada, el caso situado al final reproduce
+`XKB-822: Failed to parse input xkb string` y `xkbcommon rechazó el keymap`.
+La lectura posicional corregida pasa los tres casos sin compositor ni capturas.
+Esto reproduce una causa del mensaje; no prueba por sí solo la configuración de
+otro equipo. La corrección es posterior a la publicación de 0.1.1 Alpha.
