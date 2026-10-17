@@ -2,7 +2,7 @@
 
 Revisión y corrección del 2026-10-16. La base es e6036bf, preparación inicial de
 0.1.1-alpha. Los cuatro hallazgos se corrigieron en el código y se recompiló el
-release. Las cifras siguientes corresponden a procesos reales; no a capturas.
+release. Las cifras siguientes proceden de mediciones de los procesos con /proc.
 
 ## Correcciones
 
@@ -28,7 +28,7 @@ escriben directamente; solo los glifos antialias mezclan el píxel de destino.
 La fuente se mantiene a 16 px. Los bitmaps de glifos se reutilizan con límite de
 256 glifos y 128 KiB de píxeles en total, sin caché de textos duplicados. build.rs
 verifica los offsets ABI FreeType contra los headers instalados; no añade lógica
-GUI escrita en C. No se añadieron crates ni funciones async.
+GUI escrita en C. La implementación conserva std y FFI nativas.
 
 ## Audio y vida de sus recursos
 
@@ -68,7 +68,7 @@ se obtuvo trasladando ese coste al compositor.
 
 En 660×420 se observaron 1104 KiB privados residentes y 2414 KiB de PSS del
 proceso corregido. Esos contadores cambian según quién comparta las páginas;
-no se presentan como equivalentes exactos de los 2,4 MB de la captura Windows.
+no son directamente equivalentes a la columna de memoria del Administrador de tareas de Windows.
 No se hizo una nueva comparación Windows en iguales condiciones.
 
 ## Comprobación del sonido y del coste temporal
@@ -79,25 +79,25 @@ Otra ejecución a 660×420, con una cuenta pausada:
 - GUI después de tres alarmas: RSS 7008 KiB, PSS 2261 KiB y un hilo.
 - Sin Cairo, X11/xcb, PulseAudio o sndfile en los mapas de la GUI antes/después.
 - En otro muestreo del ayudante: pico observado de RSS 6304 KiB.
-- En ese muestreo, pico de PSS agregado GUI+ayudante: 4629 KiB. No se oculta la memoria del ayudante.
+- En ese muestreo, pico de PSS agregado GUI+ayudante: 4629 KiB. Incluye la memoria del ayudante.
 - PCM capturado en salida nula: 91851 muestras no nulas, pico 12843.
 - Reposo con cuenta pausada: cero ticks de CPU adicionales en cinco segundos.
 
 Son muestras locales, no garantías universales. FreeType/Fontconfig y sus
-componentes de distribución siguen siendo bibliotecas del sistema: no se afirma
-que se eliminaron todas las dependencias nativas. El nuevo ELF mide 402528 bytes,
-frente a 345184 de la base: 56 KiB adicionales de archivo a cambio de reducir
+dependencias transitivas siguen siendo bibliotecas del sistema. El ELF corregido
+mide 402528 bytes, frente a 345184 de la base: 56 KiB adicionales de archivo a cambio de reducir
 memoria residente y controlar la vida del audio. Peso del archivo y RAM se
 informan por separado.
 
 ## Verificación
 
-20 pruebas Linux y 12 Windows. Las nuevas comprueban reutilización de filas y
-glifos, UTF-8, límites/mezcla de píxeles, padding con ancho impar en ambos formatos,
+En la revisión de memoria pasaron 20 pruebas Linux y 12 Windows. Las nuevas
+comprueban reutilización de filas y glifos, UTF-8, límites/mezcla de píxeles,
+padding con ancho impar en ambos formatos,
 que editar el pie conserva los píxeles de la lista, que un frame sin cambios no
 repinta y que una biblioteca opcional ausente devuelve error. También pasaron
 formato, Clippy/Rustdoc con advertencias como errores y builds release.
 
-La validación manual anterior corresponde al renderizador previo. Los binarios
-corregidos se dejan listos para la nueva prueba manual; no se automatizó el
-escritorio del usuario para estas correcciones.
+Las pruebas visuales manuales registradas corresponden al renderizador anterior.
+La rasterización corregida tiene pruebas de píxeles y de integración; queda
+pendiente su aceptación visual manual.

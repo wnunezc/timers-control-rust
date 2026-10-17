@@ -35,13 +35,12 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-Origen: `/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml` del entorno
-de compilación, wayland-protocols 1.49. Las bibliotecas dinámicas Wayland, Cairo,
-xkbcommon y PulseAudio se obtienen del sistema; no se copian al paquete local.
+Origen: `/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml`,
+wayland-protocols 1.49. Los metadatos se generan al compilar la aplicación.
 
 ## Bibliotecas del sistema
 
-La versión Linux corregida utiliza FreeType para rasterizar fuentes:
+Timer-Rust utiliza FreeType para rasterizar fuentes en Linux:
 This software is based in part on the work of the FreeType Team.
 También usa Fontconfig, xkbcommon y Wayland; para audio carga libsndfile y
 PulseAudio solo en el ayudante temporal. Estas bibliotecas se instalan desde
